@@ -6,7 +6,6 @@ using DocStringExtensions
 include("GaussianMixture.jl")
 include("QuadratureRule.jl")
 
-#改变了更新规则，其中w的速度变为两倍，C的规则全变，m规则不变
 """
 GMWVIObj{FT<:AbstractFloat, IT<:Int}
 Struct that is used in sampling e^{-Phi_r} with Gaussian mixture gradient descent
@@ -163,10 +162,10 @@ function update_ensemble!(gmgd::GMWVIObj{FT, IT}, func::Function, dt_max::FT) wh
     c_weights_GM, mean_weights_GM, N_ens_GM = gmgd.c_weights_GM, gmgd.mean_weights_GM, gmgd.N_ens_GM
     logρ_mean, ∇logρ_mean, ∇²logρ_mean  = compute_logρ_gm_expectation(exp.(logx_w), x_mean, sqrt_xx_cov, inv_sqrt_xx_cov, c_weights_GM, mean_weights_GM, N_ens_GM, gmgd.Hessian_correct_GM)
     
-    ########## update covariance
+    dt = dt_max 
+    ########## update
     for im = 1:N_modes
-        dt = dt_max
-        # update covariance
+        ## update covariance
         if update_covariance
             Mtemp=Matrix(I, N_x, N_x)+dt*(∇²logρ_mean[im, :, :] + ∇²Φᵣ_mean[im, :, :]);
             Mtemp=Hermitian(Mtemp);
@@ -181,27 +180,17 @@ function update_ensemble!(gmgd::GMWVIObj{FT, IT}, func::Function, dt_max::FT) wh
         else
             xx_cov_n[im, :, :] = xx_cov[im, :, :]
         end
-    end
 
+        ## update mean
+        x_mean_n[im, :]  =  x_mean[im, :] - dt*(∇logρ_mean[im, :] + ∇Φᵣ_mean[im, :])
 
-    ########## update mean
-    for im = 1:N_modes
-        dt = dt_max
-        # update mean
-        x_mean_n[im, :]  =  x_mean[im, :] - dt*(∇logρ_mean[im, :] + ∇Φᵣ_mean[im, :]) 
-    end
-
-
-    ########## update weights
-    for im = 1:N_modes
-        dt = dt_max
-
-        # update weights
+        ## update weights
         # dlogwₖ = ∫(ρᴳᴹ - Nₖ)(logρᴳᴹ + Φᵣ)dθ
         # logwₖ +=  -Δt∫Nₖ(logρᴳᴹ + Φᵣ)dθ + Δt ∫ρᴳᴹ(logρᴳᴹ + Φᵣ)dθ
         # the second term is independent of k, it is a normalization term
         logx_w_n[im] = logx_w[im] -2* dt*(logρ_mean[im] + Φᵣ_mean[im])
     end
+
     # for im = 1:N_modes
     #     @info "mean = ", x_mean[im, :]
     #     @info "mean update = ", norm(∇logρ_mean[im, :] + ∇Φᵣ_mean[im, :]), norm(dt*xx_cov_n[im, :, :]*(∇logρ_mean[im, :] + ∇Φᵣ_mean[im, :]))
