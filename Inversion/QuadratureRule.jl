@@ -1,5 +1,6 @@
 using LinearAlgebra
 using ForwardDiff
+using Random
 # quadrature points
 # C = √C √Cᵀ
 # xᵢ=m+√C cᵢ , here cᵢ ∈ Rᴺ
@@ -92,12 +93,13 @@ function compute_sqrt_matrix(C; type="Cholesky")
     return sqrt_cov, inv_sqrt_cov
 end
 
-function construct_ensemble(x_mean, sqrt_cov; c_weights = nothing, N_ens = 10)
-
-    N_x = size(x_mean)
-
-    if c_weights === nothing
-        xs = ones(N_ens)*x_mean' + (sqrt_cov * rand(Normal(0, 1),N_x, N_ens))'
+function construct_ensemble(x_mean, sqrt_cov; c_weights = nothing, N_ens = 100)
+    if c_weights == nothing
+        N_x = size(x_mean,1)
+        # generate random weights on the fly
+        c_weights = rand(Normal(0, 1), N_x, N_ens)
+        c_weights[:,div(N_ens,2)+1:end] = -c_weights[:,1:div(N_ens,2)]
+        xs = ones(N_ens)*x_mean' + (sqrt_cov * c_weights)'
     else
         N_ens = size(c_weights,2)
         xs = ones(N_ens)*x_mean' + (sqrt_cov * c_weights)'
