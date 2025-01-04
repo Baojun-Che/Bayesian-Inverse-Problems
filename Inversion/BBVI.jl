@@ -94,7 +94,7 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
 
         # generate sampling points subject to Normal(x_mean [im,:], xx_cov[im]), size=(N_ens, N_x)
         x_p =  construct_ensemble(x_mean[im,:], sqrt_xx_cov[im]; c_weights = nothing, N_ens = N_ens)
-        # log_ratio[i] = log ρ_GM[x_p[i,:]] + log func_Phi[x_p[i,:]]
+        # log_ratio[i] = logρ[x_p[i,:]] + log func_Phi[x_p[i,:]]
         
         # if im==1 && gmgd.iter==1  @show sum((x_p[i,:]-x_mean[im,:])*(x_p[i,:]-x_mean[im,:])'-xx_cov[im,:,:] for i=1:N_ens)/N_ens  end
 
@@ -106,13 +106,20 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
             log_ratio[i] = log(log_ratio[i])+func_Phi(x_p[i,:])
         end
 
-        log_ratio.-= mean(log_ratio)
+        # E[logρ+Phi]
+        log_ratio_mean = mean(log_ratio)
+        # E[(x-m)(logρ+Phi)]
+        log_ratio_m1 = mean( (x_p[i,:]-x_mean[im,:])*log_ratio[i] for i=1:N_ens)   
+        # E[(x-m)(x-m)'(logρ+Phi)]
+        log_ratio_m2 = mean(( x_p[i,:]-x_mean[im,:])*(x_p[i,:]-x_mean[im,:])'*log_ratio[i] for i=1:N_ens)  
+        # E[(x-m)(x-m)']
+        cov_mc = mean(( x_p[i,:]-x_mean[im,:])*(x_p[i,:]-x_mean[im,:])' for i=1:N_ens)  
 
-        d_x_mean[im,:] = -log_ratio'*x_p/N_ens-(ones(1,N_ens)*x_p/N_ens)*(sum(log_ratio)/N_ens)
-        d_xx_cov[im,:,:] = -sum( ( (x_p[i,:]-x_mean[im,:])*(x_p[i,:]-x_mean[im,:])'-xx_cov[im,:,:] ) *log_ratio[i] for i=1:N_ens)/N_ens
-        d_logx_w[im] = -sum(log_ratio)/N_ens
+        d_x_mean[im,:] = -log_ratio_m1
+        d_xx_cov[im,:,:] = -(log_ratio_m2-cov_mc*log_ratio_mean)
+        d_logx_w[im] = -log_ratio_mean
+
     end
-
     x_mean_n = copy(x_mean) 
     xx_cov_n = copy(xx_cov)
     logx_w_n = copy(logx_w)
@@ -123,7 +130,7 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
     end
     # dt = dt_max
     dt = min(dt_max,  0.99 / (maximum(matrix_norm))) # keep the matrix postive definite.
-    if gmgd.iter%10==0  @show gmgd.iter,dt  end
+    # if gmgd.iter%10==0  @show gmgd.iter,dt  end
 
     if update_covariance
         xx_cov_n += dt * d_xx_cov
