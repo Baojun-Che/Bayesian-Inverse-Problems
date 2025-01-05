@@ -136,6 +136,9 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
         xx_cov_n += dt * d_xx_cov
         for im =1:N_modes
             xx_cov_n[im, :, :] = Hermitian(xx_cov_n[im, :, :])
+            if diagonal_covariance
+                xx_cov_n[im, :, :] = diagm(diag(xx_cov_n[im, :, :]))
+            end
             if !isposdef(Hermitian(xx_cov_n[im, :, :]))
                 @show gmgd.iter
                 @info "error! negative determinant for mode ", im,  x_mean[im, :], xx_cov[im, :, :], inv(xx_cov[im, :, :])
@@ -176,7 +179,7 @@ function Gaussian_mixture_BBVI(func_Phi, x0_w, x0_mean, xx0_cov;
     gmgdobj=BBVIObj(
         x0_w, x0_mean, xx0_cov;
         update_covariance = true,
-        diagonal_covariance = false,
+        diagonal_covariance = diagonal_covariance,
         sqrt_matrix_type = "Cholesky",
         N_ens = N_ens,
         w_min = 1.0e-8)
