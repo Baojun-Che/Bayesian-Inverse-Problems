@@ -28,6 +28,8 @@ mutable struct BBVIObj{FT<:AbstractFloat, IT<:Int}
     diagonal_covariance::Bool
     "Cholesky, SVD"
     sqrt_matrix_type::String
+    "single_Gaussian, Gaussian_mixture"
+    random_quadrature_type
     "number of sampling points (to compute expectation using MC)"
     N_ens::IT
     "weight clipping"
@@ -42,7 +44,7 @@ function BBVIObj(
                 update_covariance::Bool = true,
                 diagonal_covariance::Bool = false,
                 sqrt_matrix_type::String = "Cholesky",
-                # setup for Gaussian mixture part
+                random_quadrature_type::String = "Gaussian_mixture",
                 N_ens::IT = 10,
                 w_min::FT = 1.0e-8) where {FT<:AbstractFloat, IT<:Int}
 
@@ -62,9 +64,22 @@ function BBVIObj(
     BBVIObj(name,
             logx_w, x_mean, xx_cov, N_modes, N_x,
             iter, update_covariance, diagonal_covariance,
-            sqrt_matrix_type, N_ens, w_min)
+            sqrt_matrix_type, random_quadrature_type, N_ens, w_min)
 end
 
+function Gaussian_mixture_sampler(logx_w, x_mean, sqrt_xx_cov, N_sample)
+    x_w = exp.(logx_w)
+    x_w /= sum(x_w)
+    modes_dist = Categorical(x_w)
+    modes_sample = rand(modes_dist,N_sample)
+    N_modes, N_x = size(x_mean)
+    xs = zeros(N_sample,N_x)
+    for i = 1:N_sample
+        im = modes_sample[i]
+        xs[i,:] = (sqrt_xx_cov[im]*rand(Normal(0,1), N_x)+x_mean[im,:])'
+    end
+    return xs
+end
    
 """ func_Phi: the potential function, i.e the posterior is proportional to exp( - func_Phi)"""
 function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT) where {FT<:AbstractFloat, IT<:Int} #从某一步到下一步的步骤
@@ -72,6 +87,7 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
     update_covariance = gmgd.update_covariance
     sqrt_matrix_type = gmgd.sqrt_matrix_type
     diagonal_covariance = gmgd.diagonal_covariance
+    random_quadrature_type = gmgd.random_quadrature_type
 
     gmgd.iter += 1
     N_x,  N_modes = gmgd.N_x, gmgd.N_modes
@@ -79,6 +95,8 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
     x_mean  = gmgd.x_mean[end]
     logx_w  = gmgd.logx_w[end]
     xx_cov  = gmgd.xx_cov[end]
+    x_w = exp.(logx_w)
+    x_w ./= sum(x_w)
 
     sqrt_xx_cov, inv_sqrt_xx_cov = [], []
     for im = 1:N_modes
@@ -90,43 +108,72 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
     N_ens = gmgd.N_ens
     d_logx_w, d_x_mean, d_xx_cov = zeros(N_modes), zeros(N_modes, N_x), zeros(N_modes, N_x, N_x)
 
-    for im = 1:N_modes 
+    if random_quadrature_type == "single_Gaussian"
+        for im = 1:N_modes 
 
-        # generate sampling points subject to Normal(x_mean [im,:], xx_cov[im]), size=(N_ens, N_x)
-        x_p =  construct_ensemble(x_mean[im,:], sqrt_xx_cov[im]; c_weights = nothing, N_ens = N_ens)
-        # log_ratio[i] = logρ[x_p[i,:]] + log func_Phi[x_p[i,:]]
-        
-        # if im==1 && gmgd.iter==1  @show sum((x_p[i,:]-x_mean[im,:])*(x_p[i,:]-x_mean[im,:])'-xx_cov[im,:,:] for i=1:N_ens)/N_ens  end
-
-        log_ratio = zeros(N_ens) 
-        for i = 1:N_ens
-            for imm = 1:N_modes
-                log_ratio[i] += exp(logx_w[imm])*Gaussian_density_helper(x_mean[imm,:], inv_sqrt_xx_cov[imm], x_p[i,:])
+            # generate sampling points subject to Normal(x_mean [im,:], xx_cov[im]), size=(N_ens, N_x)
+            x_p =  construct_ensemble(x_mean[im,:], sqrt_xx_cov[im]; c_weights = nothing, N_ens = N_ens)
+            # log_ratio[i] = logρ[x_p[i,:]] + log func_Phi[x_p[i,:]]
+            
+            log_ratio = zeros(N_ens) 
+            for i = 1:N_ens
+                for imm = 1:N_modes
+                    log_ratio[i] += x_w[imm]*Gaussian_density_helper(x_mean[imm,:], inv_sqrt_xx_cov[imm], x_p[i,:])
+                end
+                log_ratio[i] = log(log_ratio[i])+func_Phi(x_p[i,:])
             end
-            log_ratio[i] = log(log_ratio[i])+func_Phi(x_p[i,:])
+
+            # E[logρ+Phi]
+            log_ratio_mean = mean(log_ratio)
+
+            # E[(x-m)(logρ+Phi)]
+            log_ratio_m1 = mean( (x_p[i,:]-x_mean[im,:])*log_ratio[i] for i=1:N_ens)   
+
+            # E[(x-m)(x-m)'(logρ+Phi)] - E[(x-m)(x-m)'] E(logρ+Phi)
+            # E[(x-m)(x-m)'(logρ+Phi - E(logρ+Phi))] 
+            log_ratio_m2 = mean(( x_p[i,:]-x_mean[im,:])*((x_p[i,:]-x_mean[im,:])'*(log_ratio[i] - log_ratio_mean)) for i=1:N_ens)  
+            
+            d_x_mean[im,:] = -log_ratio_m1
+            d_xx_cov[im,:,:] = -log_ratio_m2
+            d_logx_w[im] = -log_ratio_mean
+
+        end
+    
+    elseif random_quadrature_type == "Gaussian_mixture"
+        xs = Gaussian_mixture_sampler(logx_w, x_mean, sqrt_xx_cov, N_ens) # size=(N_ens,N_x)
+    
+        xs_G = zeros(N_ens,N_modes)
+        for im = 1:N_modes, i = 1:N_ens
+            xs_G[i,im] = Gaussian_density_helper(x_mean[im,:], inv_sqrt_xx_cov[im], xs[i,:])
         end
 
-        # E[logρ+Phi]
-        log_ratio_mean = mean(log_ratio)
-        # E[(x-m)(logρ+Phi)]
-        log_ratio_m1 = mean( (x_p[i,:]-x_mean[im,:])*log_ratio[i] for i=1:N_ens)   
-        # E[(x-m)(x-m)'(logρ+Phi)]
-        log_ratio_m2 = mean(( x_p[i,:]-x_mean[im,:])*(x_p[i,:]-x_mean[im,:])'*log_ratio[i] for i=1:N_ens)  
-        # E[(x-m)(x-m)']
-        cov_mc = mean(( x_p[i,:]-x_mean[im,:])*(x_p[i,:]-x_mean[im,:])' for i=1:N_ens)  
+        xs_GM = xs_G*x_w # xs_GM[i]: Gaussian mixture density at xs[i,:]
+        xs_Phi = [func_Phi(xs[i,:]) for i = 1:N_ens]
 
-        d_x_mean[im,:] = -log_ratio_m1
-        d_xx_cov[im,:,:] = -(log_ratio_m2-cov_mc*log_ratio_mean)
-        d_logx_w[im] = -log_ratio_mean
+        xs_log_ratio = log.(xs_GM) + xs_Phi
+        xs_log_ratio .-= mean(xs_log_ratio)
 
+        N = zeros(N_ens,N_modes)
+        for im = 1:N_modes, i = 1:N_ens
+            N[i,im] = xs_log_ratio[i]*xs_G[i,im]/xs_GM[i]
+        end
+        
+        for im = 1:N_modes
+            d_logx_w[im] = -mean( N[i,im] for i = 1:N_ens)
+            d_x_mean[im,:] = -mean( (xs[i,:]-x_mean[im,:])*N[i,im] for i = 1:N_ens)
+            d_xx_cov[im,:,:] = -mean((xs[i,:]-x_mean[im,:])*(xs[i,:]-x_mean[im,:])'*N[i,im] for i = 1:N_ens)-d_logx_w[im]*xx_cov[im,:,:]
+        end
+    else 
+        @error "UNDEFINED random_quadrature_type!"
     end
+    
     x_mean_n = copy(x_mean) 
     xx_cov_n = copy(xx_cov)
     logx_w_n = copy(logx_w)
 
     matrix_norm = []
     for im = 1 : N_modes
-        push!(matrix_norm, opnorm( d_xx_cov[im,:,:]*inv(xx_cov[im,:,:]) , 2))
+        push!(matrix_norm, opnorm( inv_sqrt_xx_cov[im]*d_xx_cov[im,:,:]*inv_sqrt_xx_cov[im]', 2))
     end
     # dt = dt_max
     dt = min(dt_max,  0.99 / (maximum(matrix_norm))) # keep the matrix postive definite.
@@ -169,11 +216,15 @@ end
 
 ##########
 function Gaussian_mixture_BBVI(func_Phi, x0_w, x0_mean, xx0_cov;
-     diagonal_covariance::Bool = false, N_iter = 100, dt = 1.0e-1, N_ens = -1)
+     diagonal_covariance::Bool = false, random_quadrature_type::String = "Gaussian_mixture", N_iter = 100, dt = 5.0e-1, N_ens = -1)
 
-    _, N_x = size(x0_mean) 
-    if N_ens == -1 
-        N_ens = 5*N_x
+    N_modes , N_x = size(x0_mean)
+    if random_quadrature_type == "Gaussian_mixture"
+        if N_ens == -1  N_ens = N_modes * N_x  end
+    elseif random_quadrature_type == "single_Gaussian"
+        if N_ens == -1  N_ens = 2* N_x  end
+    else 
+        @error "UNDEFINED random_quadrature_type in BBVI"
     end
 
     gmgdobj=BBVIObj(
@@ -181,16 +232,15 @@ function Gaussian_mixture_BBVI(func_Phi, x0_w, x0_mean, xx0_cov;
         update_covariance = true,
         diagonal_covariance = diagonal_covariance,
         sqrt_matrix_type = "Cholesky",
+        random_quadrature_type = random_quadrature_type, 
         N_ens = N_ens,
         w_min = 1.0e-8)
 
     for i in 1:N_iter
-        if i%div(N_iter, 10) == 0  @info "iter = ", i, " / ", N_iter  end
+        if i%max(1, div(N_iter, 10)) == 0  @info "iter = ", i, " / ", N_iter  end
         
         update_ensemble!(gmgdobj, func_Phi, dt) 
     end
     
     return gmgdobj
 end
-
-
