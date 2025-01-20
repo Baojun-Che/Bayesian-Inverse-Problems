@@ -140,10 +140,16 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
         end
     
     elseif random_quadrature_type == "Gaussian_mixture"
-        xs = Gaussian_mixture_sampler(logx_w, x_mean, sqrt_xx_cov, N_ens) # size=(N_ens,N_x)
-    
+
+        N_single = div(N_ens, N_modes)
+
+        xs = vcat([construct_ensemble(x_mean[im,:], sqrt_xx_cov[im]; c_weights = nothing, N_ens = N_single) for im = 1:N_modes]...  )  # size=(N_ens,N_x)
+        
+        xw = vcat([x_w[im]*ones(N_single) for im = 1:N_modes]...)
+
         xs_G = zeros(N_ens,N_modes)
         for im = 1:N_modes, i = 1:N_ens
+            # @show size(xs)
             xs_G[i,im] = Gaussian_density_helper(x_mean[im,:], inv_sqrt_xx_cov[im], xs[i,:])
         end
 
@@ -159,9 +165,9 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
         end
         
         for im = 1:N_modes
-            d_logx_w[im] = -mean( N[i,im] for i = 1:N_ens)
-            d_x_mean[im,:] = -mean( (xs[i,:]-x_mean[im,:])*N[i,im] for i = 1:N_ens)
-            d_xx_cov[im,:,:] = -mean((xs[i,:]-x_mean[im,:])*(xs[i,:]-x_mean[im,:])'*N[i,im] for i = 1:N_ens)-d_logx_w[im]*xx_cov[im,:,:]
+            d_logx_w[im] = -sum(xw[i]*N[i,im] for i = 1:N_ens)/N_single
+            d_x_mean[im,:] = -sum(xw[i]*(xs[i,:]-x_mean[im,:])*N[i,im] for i = 1:N_ens)/N_single
+            d_xx_cov[im,:,:] = -sum(xw[i]*(xs[i,:]-x_mean[im,:])*(xs[i,:]-x_mean[im,:])'*N[i,im] for i = 1:N_ens)/N_single-d_logx_w[im]*xx_cov[im,:,:]
         end
     else 
         @error "UNDEFINED random_quadrature_type!"
@@ -176,7 +182,7 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT)
         push!(matrix_norm, opnorm( inv_sqrt_xx_cov[im]*d_xx_cov[im,:,:]*inv_sqrt_xx_cov[im]', 2))
     end
     # dt = dt_max
-    dt = min(dt_max,  0.99 / (maximum(matrix_norm))) # keep the matrix postive definite.
+    dt = min(dt_max,  0.9 / (maximum(matrix_norm))) # keep the matrix postive definite.
     # if gmgd.iter%10==0  @show gmgd.iter,dt  end
 
     if update_covariance
