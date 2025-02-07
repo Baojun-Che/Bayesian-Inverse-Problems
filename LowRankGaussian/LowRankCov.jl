@@ -1,37 +1,35 @@
 using LinearAlgebra
-include("GaussianMixture.jl")
+include("../Inversion/GaussianMixture.jl")
 
-function degenerate_Gaussian_density(x, sqrt_xx_cov; eps::Real=0.1) 
+function Low_Rank_Gaussian_density(x, sqrt_xx_cov, cov_eps; D_inv = nothing) 
     """
         Efficiently calculate: Gaussian density exp(-x'Cx/2)/sqrt(det C),  
-        where C = (sqrt_xx_cov)(sqrt_xx_cov)'+eps*I 
+        where C = (sqrt_xx_cov)(sqrt_xx_cov)'+ eps*I 
         Notice we tolerate constant multiple error independent of x,C.
     """
     N_x, N_r = size(sqrt_xx_cov)
     if N_x <= N_r 
-        C = sqrt_xx_cov*sqrt_xx_cov' # size=(N_x, N_x)
+        C = sqrt_xx_cov*sqrt_xx_cov'+cov_eps*I # size=(N_x, N_x)
         z = C\x # Cz=x
         return exp(-dot(z,x)/2)/sqrt(det(C))
     else 
         # N_r < N_x   
-        # y = sqrt_xx_cov'*x
-        # D = sqrt_xx_cov'*sqrt_xx_cov + eps*I   # size=(N_r, N_r)
-        # if !(det(D)>0)
-        #     @error D,det(D)
-        #     @show x, sqrt_xx_cov
-        # end
-        # temp = (-norm(x)^2 + dot(y,D\y))/(2*eps)
-        # return exp(temp)/sqrt(det(D))
-
-        # N_r < N_x   
         y = sqrt_xx_cov'*x
-        D = sqrt_xx_cov'*sqrt_xx_cov + 0.01*I   # size=(N_r, N_r)
-        if !(det(D)>0)
-            @error D,det(D)
-            @show x, sqrt_xx_cov
+        if D_inv == nothing 
+            D = sqrt_xx_cov'*sqrt_xx_cov + cov_eps*I   # size=(N_r, N_r)
+            if !(det(D)>0)
+                @error D,det(D)
+                @show x, sqrt_xx_cov
+            end
+            temp1 = (-norm(x)^2 + dot(y,D\y))/(2*cov_eps)
+            temp2 = sqrt(det(D))*cov_eps^((N_x-N_r)/2)
+            return exp(temp1)/temp2
+        else
+            temp1 = (-norm(x)^2 + dot(y, D_inv*y))/(2*cov_eps)
+            temp2 = sqrt(det(D_inv))
+            temp3 = cov_eps^((N_x-N_r)/2)
+            return exp(temp1)*temp2/temp3
         end
-        temp = -norm(D\y)^2/2
-        return exp(temp)/sqrt(det(D))
     end
 end
 
@@ -56,15 +54,15 @@ function PGM_visualization_2d(ax; Nx=200, Ny=200, x_lim=[-4.0,4.0], y_lim=[-4.0,
     error = zeros(N_obj, N_iter+1)
         
     for (iobj, obj) in enumerate(objs)
-        cov_eps = obj.cov_eps
         N_modes = obj.N_modes
         for iter = 0:N_iter  
             x_w = exp.(obj.logx_w[iter+1]); x_w /= sum(x_w)
             x_mean = obj.x_mean[iter+1][:,1:2]
             xx_sqrt_cov = obj.xx_sqrt_cov[iter+1][:,1:2,:]
+            cov_eps = obj.cov_eps[iter+1]
             xx_cov = zeros(N_modes,2,2)
             for im = 1:N_modes
-                xx_cov[im,:,:]=xx_sqrt_cov[im,:,:]*xx_sqrt_cov[im,:,:]'+cov_eps*I
+                xx_cov[im,:,:]=xx_sqrt_cov[im,:,:]*xx_sqrt_cov[im,:,:]'+cov_eps[im]*I
             end
             Z = Gaussian_mixture_2d(x_w, x_mean, xx_cov,  X, Y)
             error[iobj, iter+1] = norm(Z - Z_ref,1)*dx*dy
