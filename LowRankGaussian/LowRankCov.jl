@@ -21,18 +21,71 @@ function Low_Rank_Gaussian_density(x, sqrt_xx_cov, cov_eps; D_inv = nothing)
                 @error D,det(D)
                 @show x, sqrt_xx_cov
             end
-            temp1 = (-norm(x)^2 + dot(y,D\y))/(2*cov_eps)
-            temp2 = sqrt(det(D))*cov_eps^((N_x-N_r)/2)
+            temp1 = (-norm(x)^2 + dot(y,D\y))/(2*cov_eps)-log(cov_eps)*(N_x-N_r)/2
+            temp2 = sqrt(det(D))
             return exp(temp1)/temp2
         else
-            temp1 = (-norm(x)^2 + dot(y, D_inv*y))/(2*cov_eps)
+            temp1 = (-norm(x)^2 + dot(y, D_inv*y))/(2*cov_eps)-log(cov_eps)*(N_x-N_r)/2
             temp2 = sqrt(det(D_inv))
-            temp3 = cov_eps^((N_x-N_r)/2)
-            return exp(temp1)*temp2/temp3
+            return exp(temp1)*temp2
         end
     end
 end
 
+function rank_scalar_approximation(eps0, Q0, R0, D0, N_r; rank_plus::Int = 3, A = nothing, eps_min = 0.01, method = "Nystrom")
+    """Approximate A = eps0*I + Q0*Q0' + R0*D0*R0'  with  A = eps*I +QQ',
+    based on PPCA method and eigenvalue decomposition(by RandSVD / Nystrom). """
+    if method == "RandSVD"
+        if A == nothing
+            N_x = size(Q0,1)
+            Omega = randn(N_x, N_r+rank_plus)
+            Y = eps0*Omega + Q0*(Q0'*Omega) + (R0.*D0')*(R0'*Omega)
+            Yqr = qr(Y)
+            Q = Matrix(Yqr.Q)  
+            B = eps0*Q' + Q'*Q0*Q0' + Q'*(R0.*D0')*R0'
+            trA = eps0*N_x + sum(Q0.*Q0) + sum(R0.*(R0.*D0'))
+        else
+            trA = tr(A)
+            N_x = size(A,1)
+            Omega = randn(N_x, N_r+rank_plus)
+            Y = A*Omega
+            Yqr = qr(Y)
+            Q = Matrix(Yqr.Q)  
+            B = Q'*A
+        end 
+        U0, D, _ = svd(B)
+        U = (Q*U0)[:,1:N_r]
+        D = D[1:N_r]
+        eps = (trA-sum(D))/(N_x-N_r)
+        eps = max(eps, eps_min)
+        newQ = hcat( [sqrt(max(D[i]-eps,0.01))*U[:,i] for i=1:N_r]... )
+    elseif method == "Nystrom"
+        if A == nothing
+            N_x = size(Q0,1)
+            Omega = randn(N_x, N_r+rank_plus)
+            Y = eps0*Omega + Q0*(Q0'*Omega) + (R0.*D0')*(R0'*Omega)
+            trA = eps0*N_x + sum(Q0.*Q0) + sum(R0.*(R0.*D0'))
+        else
+            trA = tr(A)
+            N_x = size(A,1)
+            Omega = randn(N_x, N_r+rank_plus)
+            Y = A*Omega
+        end 
+        # mu = sqrt(N_x)*norm(Y)*1.0e-6
+        mu = 0
+        Y_mu = Y + mu*Omega
+        C = cholesky(Hermitian(Omega'*Y_mu)).L
+        B = (C\(Y_mu'))'
+        U, D_sqrt, _ = svd(B)
+        D = [max(D_sqrt[i]^2-mu,0)  for i=1:N_r]
+        eps = (trA-sum(D))/(N_x-N_r)
+        eps = max(eps, eps_min)
+        newQ = hcat( [sqrt(max(D[i]-eps,0.01))*U[:,i] for i=1:N_r]... )
+    else
+        @error "Undefined rank_scalar_approximation method"
+    end
+    return eps, newQ
+end
 
 function PGM_visualization_2d(ax; Nx=200, Ny=200, x_lim=[-4.0,4.0], y_lim=[-4.0,4.0], func_Phi = nothing, objs=nothing, label=nothing)
 
@@ -62,7 +115,7 @@ function PGM_visualization_2d(ax; Nx=200, Ny=200, x_lim=[-4.0,4.0], y_lim=[-4.0,
             cov_eps = obj.cov_eps[iter+1]
             xx_cov = zeros(N_modes,2,2)
             for im = 1:N_modes
-                xx_cov[im,:,:]=xx_sqrt_cov[im,:,:]*xx_sqrt_cov[im,:,:]'+cov_eps[im]*I
+                xx_cov[im,:,:] = xx_sqrt_cov[im,:,:]*xx_sqrt_cov[im,:,:]'+cov_eps[im]*I
             end
             Z = Gaussian_mixture_2d(x_w, x_mean, xx_cov,  X, Y)
             error[iobj, iter+1] = norm(Z - Z_ref,1)*dx*dy

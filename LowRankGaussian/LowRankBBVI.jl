@@ -46,7 +46,7 @@ function PBBVIObj(
                 cov_eps0::Array{FT, 1};
                 random_quadrature_type::String = "Gaussian_mixture",
                 w_min::FT = 1.0e-8,
-                cov_eps_min::FT = 0.01) where {FT<:AbstractFloat}
+                cov_eps_min::FT = 1.0e-2) where {FT<:AbstractFloat}
 
     N_modes, N_x, N_r = size(xx0_sqrt_cov)
 
@@ -69,35 +69,6 @@ function PBBVIObj(
             iter, random_quadrature_type,  w_min, cov_eps_min)
 end
 
-
-function low_rank_approximation(eps0, Q0, R0, D0, N_r; rank_plus::Int = 1, A = nothing, eps_min = 0.01)
-    """Approximate A = eps0*I + Q0*Q0' + R0*D0*R0'  with  A = eps*I +QQ',
-    based on PPCA method and random SVD. """
-    if A == nothing
-        N_x = size(Q0,1)
-        Omega = randn(N_x, N_r+rank_plus)
-        Y = eps0*Omega + Q0*(Q0'*Omega) + (R0.*D0')*(R0'*Omega)
-        Yqr = qr(Y)
-        Q = Matrix(Yqr.Q)  
-        B = eps0*Q' + Q'*Q0*Q0' + Q'*(R0.*D0')*R0'
-        trA = eps0*N_x + sum(Q0.*Q0) + sum(R0.*(R0.*D0'))
-    else
-        trA = tr(A)
-        N_x = size(A,1)
-        Omega = randn(N_x, N_r+rank_plus)
-        Y = A*Omega
-        Yqr = qr(Y)
-        Q = Matrix(Yqr.Q)  
-        B = Q'*A
-    end 
-    U0, D, _ = svd(B)
-    U = (Q*U0)[:,1:N_r]
-    D = D[1:N_r]
-    eps = (trA-sum(D))/(N_x-N_r)
-    eps = max(eps, eps_min)
-    newQ = hcat( [sqrt(max(D[i]-eps,0.01))*U[:,i] for i=1:N_r]... )
-    return eps, newQ
-end
    
 """ func_Phi: the potential function, i.e the posterior is proportional to exp( - func_Phi)"""
 function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT) where {FT<:AbstractFloat, IT<:Int}
@@ -114,10 +85,9 @@ function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT
     cov_eps = gmgd.cov_eps[end]
 
     # if gmgd.iter%10==0
-    #     @show  gmgd.iter
-    #     @show  maximum(cov_eps)
-    #     @show  maximum([norm(x_mean[im,:])  for im = 1:N_modes])
-    #     @show  maximum([norm(xx_sqrt_cov[im,:,:])  for im = 1:N_modes])
+    #     @show  gmgd.iter,maximum(cov_eps)
+    #     # @show  maximum([norm(x_mean[im,:])  for im = 1:N_modes])
+    #     # @show  maximum([norm(xx_sqrt_cov[im,:,:])  for im = 1:N_modes])
     # end
     x_w = exp.(logx_w)
     x_w ./= sum(x_w)
@@ -168,30 +138,49 @@ function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT
         @error "UNDEFINED random_quadrature_type!"
     end
 
-    dt = dt_max
-    # Adaptive Time Step 
-    for im = 1:N_modes
-        R = R_list[im]
-        D = D_list[im]
-        N_ens = size(D,1)
-        D_pos_sqrt = [sqrt(max(D[i],0))  for i = 1:N_ens]
-        temp1 = R.*(D_pos_sqrt')
-        temp2 = xx_sqrt_cov[im,:,:]'*temp1
-        C = temp1'*temp1-temp2'*cov_pseudo_inv[im]*temp2
-        dt = min(dt, 0.9*cov_eps[im]/opnorm(C,2))
-    end
-    if gmgd.iter%20==0   @show dt  end
 
     x_mean_n = copy(x_mean) 
     xx_sqrt_cov_n = copy(xx_sqrt_cov)
     logx_w_n = copy(logx_w)
     cov_eps_n = copy(cov_eps)
+    
+    # Adaptive Time Step 
+
+    dt = dt_max
+
+    for im = 1:N_modes
+        R = R_list[im]
+        D = D_list[im]
+        N_ens = size(D,1)
+        D_pos_sqrt = [sqrt(max(-D[i],0))  for i = 1:N_ens]
+        temp1 = R.*(D_pos_sqrt')
+        temp2 = xx_sqrt_cov[im,:,:]'*temp1
+        C = temp1'*temp1-temp2'*cov_pseudo_inv[im]*temp2
+        dt = min(dt, 0.99*cov_eps[im]/opnorm(C,2))
+    end
+    if gmgd.iter%20==0   @show dt  end
+
 
     for im = 1:N_modes
         x_mean_n[im,:] += dt*d_x_mean[im,:]
         logx_w_n[im] += dt*d_logx_w[im]
-        cov_eps_n[im], xx_sqrt_cov_n[im,:,:] = low_rank_approximation(cov_eps[im], xx_sqrt_cov[im,:,:], R_list[im], dt*D_list[im], N_r; eps_min = cov_eps_min)
+        cov_eps_n[im], xx_sqrt_cov_n[im,:,:] = rank_scalar_approximation(cov_eps[im], xx_sqrt_cov[im,:,:], R_list[im], dt*D_list[im], N_r; eps_min = cov_eps_min)
     end
+
+    # # Adaptive Time Step 
+    # for im = 1:N_modes
+    #     R = R_list[im]
+    #     D = D_list[im]
+    #     N_ens = size(D,1)
+    #     D_pos_sqrt = [sqrt(max(-D[i],0))  for i = 1:N_ens]
+    #     temp1 = R.*(D_pos_sqrt')
+    #     temp2 = xx_sqrt_cov[im,:,:]'*temp1
+    #     C = temp1'*temp1-temp2'*cov_pseudo_inv[im]*temp2
+    #     dt = min(dt_max, 0.99*cov_eps[im]/opnorm(C,2))
+    #     x_mean_n[im,:] += dt*d_x_mean[im,:]
+    #     logx_w_n[im] += dt*d_logx_w[im]
+    #     cov_eps_n[im], xx_sqrt_cov_n[im,:,:] = rank_scalar_approximation(cov_eps[im], xx_sqrt_cov[im,:,:], R, dt*D, N_r; eps_min = cov_eps_min)
+    # end
 
     # Normalization
     w_min = gmgd.w_min
