@@ -32,7 +32,7 @@ function Low_Rank_Gaussian_density(x, sqrt_xx_cov, cov_eps; D_inv = nothing)
     end
 end
 
-function rank_scalar_approximation(eps0, Q0, R0, D0, N_r; rank_plus::Int = 3, A = nothing, eps_min = 0.01, method = "Nystrom")
+function rank_scalar_approximation(eps0, Q0, R0, D0, N_r; rank_plus::Int = 3, A = nothing, eps_min = 0.01, method = "RandSVD")
     """Approximate A = eps0*I + Q0*Q0' + R0*D0*R0'  with  A = eps*I +QQ',
     based on PPCA method and eigenvalue decomposition(by RandSVD / Nystrom). """
     if method == "RandSVD"
@@ -55,10 +55,10 @@ function rank_scalar_approximation(eps0, Q0, R0, D0, N_r; rank_plus::Int = 3, A 
         end 
         U0, D, _ = svd(B)
         U = (Q*U0)[:,1:N_r]
-        D = D[1:N_r]
+        # D = D[1:N_r]
         eps = (trA-sum(D))/(N_x-N_r)
         eps = max(eps, eps_min)
-        newQ = hcat( [sqrt(max(D[i]-eps,0.01))*U[:,i] for i=1:N_r]... )
+        newQ = hcat( [sqrt(max(D[i]-eps,1.0e-6))*U[:,i] for i=1:N_r]... )
     elseif method == "Nystrom"
         if A == nothing
             N_x = size(Q0,1)
@@ -71,8 +71,7 @@ function rank_scalar_approximation(eps0, Q0, R0, D0, N_r; rank_plus::Int = 3, A 
             Omega = randn(N_x, N_r+rank_plus)
             Y = A*Omega
         end 
-        # mu = sqrt(N_x)*norm(Y)*1.0e-6
-        mu = 0
+        mu = sqrt(N_x)*norm(Y)*1.0e-6
         Y_mu = Y + mu*Omega
         C = cholesky(Hermitian(Omega'*Y_mu)).L
         B = (C\(Y_mu'))'
@@ -85,6 +84,53 @@ function rank_scalar_approximation(eps0, Q0, R0, D0, N_r; rank_plus::Int = 3, A 
         @error "Undefined rank_scalar_approximation method"
     end
     return eps, newQ
+end
+
+function new_rank_scalar_approximation(eps0, Q0, R0, D0, N_r; rank_plus::Int = 3, A = nothing, eps_min = 0.01, method = "RandSVD")
+    """Approximate A = eps0*I + Q0*Q0' + R0*D0*R0'  with  A = eps*I +QQ',
+    based on PPCA method and eigenvalue decomposition(by RandSVD / Nystrom). """
+    if method == "RandSVD"
+        if A == nothing
+            N_x = size(Q0,1)
+            Omega = randn(N_x, N_r+rank_plus)
+            Y = eps0*Omega + Q0*(Q0'*Omega) + (R0.*D0')*(R0'*Omega)
+            Yqr = qr(Y)
+            Q = Matrix(Yqr.Q)  
+            B = eps0*Q' + Q'*Q0*Q0' + Q'*(R0.*D0')*R0'
+            trA = eps0*N_x + sum(Q0.*Q0) + sum(R0.*(R0.*D0'))
+        else
+            trA_inv = tr(inv(A))
+            N_x = size(A,1)
+            Omega = randn(N_x, N_r+rank_plus)
+            Y = A*Omega
+            Yqr = qr(Y)
+            Q = Matrix(Yqr.Q)  
+            B = Q'*A
+        end 
+        U0, D, _ = svd(B)
+        U = (Q*U0)[:,1:N_r]
+        D = D[1:N_r]
+        eps = (N_x-N_r)/(trA_inv-sum(1.0./D))
+        eps = max(eps, eps_min)
+        newQ = hcat( [sqrt(max(D[i]-eps,1.0e-6))*U[:,i] for i=1:N_r]... )
+    else
+        @error "Undefined rank_scalar_approximation method"
+    end
+    return eps, newQ
+end
+
+function Gaussian_mixture_sampler(logx_w, x_mean, xx_sqrt_cov, cov_eps, N_sample)
+    x_w = exp.(logx_w)
+    x_w /= sum(x_w)
+    modes_dist = Categorical(x_w)
+    modes_sample = rand(modes_dist,N_sample)
+    N_modes, N_x, N_r = size(xx_sqrt_cov)
+    xs = zeros(N_x,N_sample)
+    for i = 1:N_sample
+        im = modes_sample[i]
+        xs[:,i] = xx_sqrt_cov[im,:,:]*randn(N_r)+sqrt(cov_eps[im])*randn(N_x)+x_mean[im,:]
+    end
+    return xs
 end
 
 function PGM_visualization_2d(ax; Nx=200, Ny=200, x_lim=[-4.0,4.0], y_lim=[-4.0,4.0], func_Phi = nothing, objs=nothing, label=nothing)
