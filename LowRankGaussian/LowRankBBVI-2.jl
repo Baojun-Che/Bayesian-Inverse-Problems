@@ -68,28 +68,27 @@ function PBBVIObj(
             iter, random_quadrature_type,  w_min, cov_eps_min)
 end
 
-function gradient_matching(R, D, xx_sqrt_cov; singular_value_min=1.0e-4)
+function gradient_matching(R, D, cov_eps, xx_sqrt_cov ; singular_value_min=1.0e-4)
     """ find P and d_eps such that QP'+PQ'+d_eps*I approximate RDR'    """
     N_x, N_r =size(R)
-    U, Σ , W = svd(xx_sqrt_cov)  # D = U*Σ*W'
+    U, Σ , V = svd(xx_sqrt_cov)  # D = U*Σ*W'
     for i =1:N_r
         Σ[i] = max(Σ[i],singular_value_min)
     end
-    CU = (R.*D')*(R'*U)  #  C*U
-    V = U'*CU   #  U'*C*U
-    trC = sum((R.*D').*R)
-    d_eps = (trC- tr(V))/(N_x-N_r)
-    V1 = V - d_eps*I
-    P1 = zeros(N_r,N_r)
-    for i = 1:N_r, j=1:N_r
-        P1[i,j] = V1[i,j]/(Σ[i]+Σ[j])
-    end
-    P = U*P1+CU./(Σ')
-    return d_eps, P*W'
+    C_eig = cov_eps*ones(N_x)
+    C_eig[1:N_r] += Σ.*Σ
+    C_inv_eig = 1.0./C_eig
+    UtR= U'*R
+    temp = (Σ.*Σ)./C_eig[1:N_r]
+    C_inv_R = (R-U.*(temp')*(UtR))/cov_eps  #  inv(C)*R
+    d_eps = sum((C_inv_R.*D').*C_inv_R)/(norm(C_inv_eig)^2)
+    temp2 = (R.*D')*UtR'./Σ'*V' #RDR*pseudo_inv(Q) 
+    d_Q = temp2-U*(U'*temp2)/2
+    return d_eps, d_Q
 end
 
 """ func_Phi: the potential function, i.e the posterior is proportional to exp( - func_Phi)"""
-function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT) where {FT<:AbstractFloat, IT<:Int}
+function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT, beta::FT) where {FT<:AbstractFloat, IT<:Int}
     
 
     gmgd.iter += 1
@@ -101,11 +100,11 @@ function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT
     xx_sqrt_cov  = gmgd.xx_sqrt_cov[end]
     cov_eps = gmgd.cov_eps[end]
 
-    if gmgd.iter%10==0
-        @show  gmgd.iter,maximum(cov_eps)
-        @show  maximum([norm(x_mean[im,:])  for im = 1:N_modes])
-        @show  maximum([norm(xx_sqrt_cov[im,:,:])  for im = 1:N_modes])
-    end
+    # if gmgd.iter%10==0
+    #     @show  gmgd.iter,maximum(cov_eps)
+    #     @show  maximum([norm(x_mean[im,:])  for im = 1:N_modes])
+    #     @show  maximum([norm(xx_sqrt_cov[im,:,:])  for im = 1:N_modes])
+    # end
 
     x_w = exp.(logx_w)
     x_w ./= sum(x_w)
@@ -149,7 +148,7 @@ function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT
 
             D = - [log_ratio[i]+log_ratio[i+N_r] for i=1:N_r]/N_ens
     
-            d_cov_eps[im],d_sqrt_cov[im,:,:] = gradient_matching(R[:,1:N_r], D, xx_sqrt_cov[im,:,:])
+            d_cov_eps[im],d_sqrt_cov[im,:,:] = gradient_matching(R[:,1:N_r], D, cov_eps[im], xx_sqrt_cov[im,:,:])
         end
     else
         @error "UNDEFINED random_quadrature_type!"
@@ -165,9 +164,9 @@ function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT
     dt = dt_max
 
     for im = 1:N_modes
-        dt = min(dt,0.5*cov_eps[im]/abs(d_cov_eps[im]))
+        dt = min(dt, beta*cov_eps[im]/abs(d_cov_eps[im]), beta*norm(xx_sqrt_cov[im,:,:])/norm(d_sqrt_cov[im,:,:]))
     end
-    if gmgd.iter%10==0   @show dt  end
+    if gmgd.iter%50==0   @show dt  end
 
     x_mean_n += d_x_mean*dt
     xx_sqrt_cov_n += d_sqrt_cov*dt
@@ -206,10 +205,16 @@ function Gaussian_mixture_EnBBVI(func_Phi, x0_w, x0_mean, xx0_sqrt_cov, cov_eps0
         x0_w, x0_mean, xx0_sqrt_cov, cov_eps0;
         random_quadrature_type = random_quadrature_type)
 
+    dt_max = dt
+    beta = 0.25
     for i in 1:N_iter
         if i%max(1, div(N_iter, 10)) == 0  @info "iter = ", i, " / ", N_iter  end
-        
-        update_ensemble!(gmgdobj, func_Phi, dt) 
+        if i%50 == 0 
+            dt_max = dt*5/(5+(i/50)) 
+            beta = 1.1*beta
+        end 
+
+        update_ensemble!(gmgdobj, func_Phi, dt_max, beta) 
     end
     
     return gmgdobj

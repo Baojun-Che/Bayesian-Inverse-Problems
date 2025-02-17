@@ -70,7 +70,7 @@ end
 
    
 """ func_Phi: the potential function, i.e the posterior is proportional to exp( - func_Phi)"""
-function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT) where {FT<:AbstractFloat, IT<:Int}
+function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT, beta::FT) where {FT<:AbstractFloat, IT<:Int}
     
 
     gmgd.iter += 1
@@ -109,6 +109,7 @@ function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT
 
             log_ratio = zeros(N_ens)
             R = xx_sqrt_cov[im,:,:]*randn(N_r,N_r)+sqrt(cov_eps[im])*randn(N_x,N_r) 
+            # R = xx_sqrt_cov[im,:,:]*sqrt(N_r)+sqrt(cov_eps[im])*randn(N_x,N_r) 
             R = hcat(R,-R) # R=[x_1-m,x_2-m,...]
             
             for i = 1:N_ens
@@ -180,7 +181,7 @@ function update_ensemble!(gmgd::PBBVIObj{FT, IT}, func_Phi::Function, dt_max::FT
         temp1 = R.*(D_pos_sqrt')
         temp2 = xx_sqrt_cov[im,:,:]'*temp1
         C = temp1'*temp1-temp2'*cov_pseudo_inv[im]*temp2
-        dt = min(dt, 0.99*cov_eps[im]/opnorm(C,2))
+        dt = min(dt, beta*cov_eps[im]/opnorm(C,2))
     end
     if gmgd.iter%100==0   @show dt  end
 
@@ -224,10 +225,16 @@ function Gaussian_mixture_EnBBVI(func_Phi, x0_w, x0_mean, xx0_sqrt_cov, cov_eps0
         x0_w, x0_mean, xx0_sqrt_cov, cov_eps0;
         random_quadrature_type = random_quadrature_type)
 
+    dt_max = dt
+    beta = 0.99
     for i in 1:N_iter
         if i%max(1, div(N_iter, 10)) == 0  @info "iter = ", i, " / ", N_iter  end
-        
-        update_ensemble!(gmgdobj, func_Phi, dt) 
+        if i%50 == 0 
+            dt_max = dt*5/(5+(i/50)) 
+            beta = max(0.98*beta,0.5)
+        end 
+
+        update_ensemble!(gmgdobj, func_Phi, dt_max, beta) 
     end
     
     return gmgdobj
