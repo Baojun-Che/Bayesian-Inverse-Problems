@@ -7,9 +7,6 @@ include("LowRankCov.jl")
 include("../Inversion/QuadratureRule.jl")
 include("../Inversion/GaussianMixture.jl")
 
-"""
-Particles-based Gaussian Mixture Black-Box Variational Inference.
-"""
 mutable struct PBBVIObj{FT<:AbstractFloat, IT<:Int}
     "object name"
     name::String

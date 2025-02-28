@@ -7,9 +7,6 @@ include("LowRankCov.jl")
 include("../Inversion/QuadratureRule.jl")
 include("../Inversion/GaussianMixture.jl")
 
-"""
-Particles-based Gaussian Mixture Black-Box Variational Inference.
-"""
 mutable struct PBBVIObj{FT<:AbstractFloat, IT<:Int}
     "object name"
     name::String
@@ -69,20 +66,19 @@ function PBBVIObj(
 end
 
 function gradient_matching(R, D, cov_eps, xx_sqrt_cov ; singular_value_min=1.0e-4)
-    """ find P and d_eps such that QP'+PQ'+d_eps*I approximate RDR'    """
     N_x, N_r =size(R)
-    U, Σ , V = svd(xx_sqrt_cov)  # D = U*Σ*W'
+    U, Σ , V = svd(xx_sqrt_cov)  # D = U*Σ*V'
     for i =1:N_r
         Σ[i] = max(Σ[i],singular_value_min)
     end
     C_eig = cov_eps*ones(N_x)
-    C_eig[1:N_r] += Σ.*Σ
-    C_inv_eig = 1.0./C_eig
-    UtR= U'*R
-    temp = (Σ.*Σ)./C_eig[1:N_r]
+    C_eig[1:N_r] += Σ.*Σ  # eigenvalues of C = cov_eps*I + xx_sqrt_cov*xx_sqrt_cov'
+    C_inv_eig = 1.0./C_eig  # eigenvalues of C^{-1}
+    UtR= U'*R  #   U'*R
+    temp = (Σ.*Σ)./C_eig[1:N_r] 
     C_inv_R = (R-U.*(temp')*(UtR))/cov_eps  #  inv(C)*R
-    d_eps = sum((C_inv_R.*D').*C_inv_R)/(norm(C_inv_eig)^2)
-    temp2 = (R.*D')*UtR'./Σ'*V' #RDR*pseudo_inv(Q) 
+    d_eps = sum((C_inv_R.*D').*C_inv_R)/(norm(C_inv_eig)^2)  # d_eps = tr(C^{-1}RDRC^{-1})/norm(C^{-1})^2
+    temp2 = (R.*D')*UtR'./Σ'*V' # RDR*pseudo_inv(Q) 
     d_Q = temp2-U*(U'*temp2)/2
     return d_eps, d_Q
 end
