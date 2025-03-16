@@ -153,7 +153,7 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT,
 
         d_x_mean[im,:] = -log_ratio_m1
         d_xx_cov[im,:,:] = -log_ratio_m2
-        d_logx_w[im] = -c-sum(D)
+        d_logx_w[im] = -c-sum(D)/2
 
         push!(D_norm, maximum(abs.(D)))
 
@@ -170,9 +170,9 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT,
     end
     
     # # set an upper bound dt_max, with cos annealing
-    lower_bound = 0.5
-    annealing_rate = (lower_bound + (0.1 - lower_bound)*cos(pi/2 * gmgd.iter/N_iter))
-    dt = min(dt_max, annealing_rate/maximum(D_norm), annealing_rate/(maximum(vector_norm))) # keep the matrix postive definite, avoid too large cov/mean update.
+    lower_bound = 0.25
+    annealing_rate = (lower_bound + (1 - lower_bound)*cos(pi/2 * gmgd.iter/N_iter))
+    dt = min(dt_max, annealing_rate/maximum(D_norm)) # keep the matrix postive definite, avoid too large cov update.
     
     if gmgd.iter%20==0
         # @info "dt, |dm|, |dC|, annealing_dt, |C| = ", dt, norm(d_x_mean), norm(d_xx_cov), (0.01 + (1.0 - 0.01)*cos(pi/2 * iter/N_iter)), maximum(matrix_norm) 
