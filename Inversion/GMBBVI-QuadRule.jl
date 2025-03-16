@@ -126,7 +126,7 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT,
     N_ens = gmgd.N_ens
     d_logx_w, d_x_mean, d_xx_cov = zeros(N_modes), zeros(N_modes, N_x), zeros(N_modes, N_x, N_x)
 
-    dt = dt_max
+    D_norm = []
 
     for im = 1:N_modes 
 
@@ -147,11 +147,6 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT,
         c = log_ratio[end]
         D = (log_ratio[1:N_x]+log_ratio[N_x+1:2*N_x].-2*c)/alpha^2
         beta = (log_ratio[1:N_x]-log_ratio[N_x+1:2*N_x])/(2*alpha)
-
-        dt = min(dt, 0.9/maximum(abs.(D)))
-        # E[logρ+Phi]
-
-        log_ratio_mean = mean(log_ratio)
         
         log_ratio_m1 = sqrt_xx_cov[im]*beta
         log_ratio_m2 = sqrt_xx_cov[im].*(D')*sqrt_xx_cov[im]'
@@ -159,6 +154,8 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT,
         d_x_mean[im,:] = -log_ratio_m1
         d_xx_cov[im,:,:] = -log_ratio_m2
         d_logx_w[im] = -c-sum(D)
+
+        push!(D_norm, maximum(abs.(D)))
 
     end
     
@@ -168,15 +165,16 @@ function update_ensemble!(gmgd::BBVIObj{FT, IT}, func_Phi::Function, dt_max::FT,
 
     matrix_norm, vector_norm = [], []
     for im = 1 : N_modes
-        push!(matrix_norm, opnorm( inv_sqrt_xx_cov[im]*d_xx_cov[im,:,:]*inv_sqrt_xx_cov[im]', 2))
+        # push!(matrix_norm, opnorm( inv_sqrt_xx_cov[im]*d_xx_cov[im,:,:]*inv_sqrt_xx_cov[im]', 2))
         push!(vector_norm, norm(d_x_mean[im,:])/(norm(x_mean[im,:]) + 0.01))
     end
     
     # # set an upper bound dt_max, with cos annealing
-    # gamma = 0.1
-    # dt = min(dt,  (gamma + (1.0 - gamma)*cos(pi/2 * iter/N_iter)) / (maximum(matrix_norm)), (gamma + (1.0 - gamma)*cos(pi/2 * iter/N_iter)) / (maximum(vector_norm))) # keep the matrix postive definite, avoid too large cov/mean update.
+    lower_bound = 0.5
+    annealing_rate = (lower_bound + (0.1 - lower_bound)*cos(pi/2 * gmgd.iter/N_iter))
+    dt = min(dt_max, annealing_rate/maximum(D_norm), annealing_rate/(maximum(vector_norm))) # keep the matrix postive definite, avoid too large cov/mean update.
     
-    if gmgd.iter%10==0
+    if gmgd.iter%20==0
         # @info "dt, |dm|, |dC|, annealing_dt, |C| = ", dt, norm(d_x_mean), norm(d_xx_cov), (0.01 + (1.0 - 0.01)*cos(pi/2 * iter/N_iter)), maximum(matrix_norm) 
         @info "dt=", dt
     end 
